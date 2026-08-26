@@ -31,8 +31,7 @@ Or from a local clone of this repo, point the marketplace at the directory:
 /plugin install top-of-mind@top-of-mind
 ```
 
-Either way the plugin id is `ethan-hann@top-of-mind` - the plugin and its
-marketplace share the name.
+Either way the plugin id is `ethan-hann@top-of-mind`
 
 The same two steps run from a shell, outside a session:
 
