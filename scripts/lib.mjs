@@ -14,12 +14,116 @@ function int(v, d) {
   return Number.isFinite(n) && n > 0 ? n : d;
 }
 
-/** Tunable via env so users need not edit the source. */
-export const CONFIG = {
-  cap: int(process.env.TOP_OF_MIND_CAP, 50),
-  halfLifeDays: int(process.env.TOP_OF_MIND_HALF_LIFE_DAYS, 30),
-  pinReads: int(process.env.TOP_OF_MIND_PIN_READS, 5),
-};
+export const CONFIG_FILE = '.top-of-mind.json';
+export const ARCHIVE_DIR = '.archive';
+
+/**
+ * Resolve a user-supplied path, expanding a leading ~ to the home directory
+ * first. path.resolve alone treats ~ as a literal directory name, so a natural
+ * `~/.claude/memory` would land under the current directory instead.
+ */
+export function resolveUserPath(p) {
+  if (typeof p !== 'string') return p;
+  let out = p.trim();
+  if (out === '~' || out.startsWith('~/') || out.startsWith('~\\')) {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    out = path.join(home, out.slice(1));
+  }
+  return path.resolve(out);
+}
+
+export const DEFAULTS = { halfLifeDays: 30, pinReads: 5, mode: 'archive' };
+
+/**
+ * Per-store config, in precedence order: environment, then the store's
+ * .top-of-mind.json, then defaults.
+ *
+ * `cap` deliberately has no default. Until someone sets one, the hook runs in
+ * observe-only mode: it scores and re-ranks but never evicts. A default cap
+ * would silently destroy the memories of anyone whose store is larger than the
+ * number we happened to pick.
+ */
+export function loadConfig(dir) {
+  let file = {};
+  try {
+    file = JSON.parse(fs.readFileSync(path.join(dir, CONFIG_FILE), 'utf8')) ?? {};
+  } catch {}
+
+  const envCap = int(process.env.TOP_OF_MIND_CAP, 0);
+  const fileCap = int(file.cap, 0);
+  const cap = envCap || fileCap || null;
+
+  // Paused, not forgotten. Turning capping off keeps cap and mode on disk, so
+  // switching back on restores the settings rather than asking for them again.
+  const envActive = process.env.TOP_OF_MIND_ACTIVE;
+  const active =
+    envActive === '0' || envActive === 'false'
+      ? false
+      : envActive === '1' || envActive === 'true'
+        ? true
+        : file.active !== false;
+
+  const mode =
+    process.env.TOP_OF_MIND_MODE === 'delete' || process.env.TOP_OF_MIND_MODE === 'archive'
+      ? process.env.TOP_OF_MIND_MODE
+      : file.mode === 'delete' || file.mode === 'archive'
+        ? file.mode
+        : DEFAULTS.mode;
+
+  return {
+    cap,
+    active,
+    // hasCap: a cap exists on disk. configured: a cap exists AND capping is on.
+    // Only `configured` may retire anything; the split lets callers tell
+    // "never set up" apart from "set up but paused".
+    hasCap: cap !== null,
+    configured: cap !== null && active,
+    halfLifeDays: int(process.env.TOP_OF_MIND_HALF_LIFE_DAYS, int(file.halfLifeDays, DEFAULTS.halfLifeDays)),
+    pinReads: int(process.env.TOP_OF_MIND_PIN_READS, int(file.pinReads, DEFAULTS.pinReads)),
+    mode,
+  };
+}
+
+export function saveConfig(dir, cfg) {
+  const out = {
+    version: 1,
+    active: cfg.active !== false,
+    cap: cfg.cap,
+    halfLifeDays: cfg.halfLifeDays,
+    pinReads: cfg.pinReads,
+    mode: cfg.mode,
+  };
+  fs.writeFileSync(path.join(dir, CONFIG_FILE), JSON.stringify(out, null, 2) + '\n', 'utf8');
+  return out;
+}
+
+/**
+ * Retire one memory: move it to .archive/ or delete it outright.
+ * Archiving keeps the file but drops it from MEMORY.md, which is what actually
+ * costs context, so the token saving is the same and nothing is destroyed.
+ */
+export function evictFile(dir, file, mode) {
+  const src = path.join(dir, file);
+  if (mode === 'delete') {
+    fs.rmSync(src, { force: true });
+    return;
+  }
+  const archDir = path.join(dir, ARCHIVE_DIR);
+  fs.mkdirSync(archDir, { recursive: true });
+  let dest = path.join(archDir, file);
+  if (fs.existsSync(dest)) {
+    const base = file.replace(/\.md$/, '');
+    let n = 2;
+    while (fs.existsSync(path.join(archDir, `${base}.${n}.md`))) n++;
+    dest = path.join(archDir, `${base}.${n}.md`);
+  }
+  try {
+    fs.renameSync(src, dest);
+  } catch {
+    fs.copyFileSync(src, dest);
+    fs.rmSync(src, { force: true });
+  }
+}
 
 export const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
@@ -31,7 +135,7 @@ const PIN_RE = /^\s*pinned\s*:\s*(true|yes|1)\s*$/i;
  * Effective score now: banked points decayed since they were banked.
  * Negative ages (clock skew) are clamped so they cannot inflate a score.
  */
-export function effective(st, now, halfLifeDays = CONFIG.halfLifeDays) {
+export function effective(st, now, halfLifeDays = DEFAULTS.halfLifeDays) {
   const days = Math.max(0, (now - st.last) / 86400000);
   return st.score * Math.pow(0.5, days / halfLifeDays);
 }
@@ -63,7 +167,18 @@ export function isManuallyPinned(file) {
 export function resolveStore(filePath) {
   const full = path.resolve(filePath);
   const norm = full.split(path.sep).join('/');
-  if (!norm.includes('/.claude/')) return null;
+
+  // Normally the store sits under a .claude directory. When CLAUDE_CONFIG_DIR
+  // relocates the config, that directory can be named anything, so accept
+  // paths under it as well. Without this the plugin silently ignores the
+  // memory of anyone who has moved their config.
+  let inConfig = norm.includes('/.claude/');
+  if (!inConfig && process.env.CLAUDE_CONFIG_DIR) {
+    const cfgRoot = path.resolve(process.env.CLAUDE_CONFIG_DIR).split(path.sep).join('/');
+    inConfig = norm === cfgRoot || norm.startsWith(cfgRoot.replace(/\/$/, '') + '/');
+  }
+  if (!inConfig) return null;
+
   const dir = path.dirname(full);
   if (path.basename(dir) !== 'memory') return null;
   const indexPath = path.join(dir, 'MEMORY.md');
@@ -104,11 +219,19 @@ export function parseIndex(indexPath) {
  * ranks as recent, not as an eviction candidate), and entries no longer in the
  * index are dropped. Accepts a v2 log ({file: "<ISO>"}) and migrates it.
  */
+export function readLog(logPath) {
+  try {
+    return JSON.parse(fs.readFileSync(logPath, 'utf8')) ?? {};
+  } catch {
+    return {};
+  }
+}
+
 export function loadState(dir, logPath, indexed) {
   const state = new Map();
   if (fs.existsSync(logPath)) {
     try {
-      const j = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const j = readLog(logPath);
       for (const [file, v] of Object.entries(j?.seen ?? {})) {
         if (typeof v === 'string') {
           const t = Date.parse(v);
@@ -134,7 +257,7 @@ export function loadState(dir, logPath, indexed) {
   return state;
 }
 
-export function saveState(logPath, state) {
+export function saveState(logPath, state, meta = {}) {
   const seen = {};
   for (const [k, v] of state) {
     seen[k] = {
@@ -143,11 +266,80 @@ export function saveState(logPath, state) {
       score: Math.round(v.score * 10000) / 10000,
     };
   }
-  fs.writeFileSync(logPath, JSON.stringify({ version: 3, seen }), 'utf8');
+  fs.writeFileSync(logPath, JSON.stringify({ version: 3, seen, meta }), 'utf8');
 }
 
-/** Default global store location, matching autoMemoryDirectory's default. */
+/**
+ * Translate plain subcommand syntax into the flag form the scripts parse:
+ *
+ *   memory-setup cap 100 delete   ->  --cap 100 --mode delete
+ *   memory-setup off              ->  --off
+ *   memory-status pinned          ->  --pinned
+ *
+ * Slash commands read better as words than as flags, and the words are what
+ * people actually type. Explicit flags still pass through untouched, so the
+ * scripts stay scriptable.
+ *
+ * spec.booleans maps a word to a flag. spec.values maps a word to a flag that
+ * consumes the next token. spec.bare handles a lone word that implies a flag
+ * and its value, such as `delete` meaning `--mode delete`.
+ */
+export function normalizeArgs(argv, spec = {}) {
+  const valueFlags = new Set(Object.values(spec.values ?? {}));
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('-')) {
+      out.push(a);
+      // A flag that takes a value swallows the next token untouched, so a
+      // value that happens to be a keyword (`--mode delete`, or a --path
+      // ending in "off") is never re-read as a subcommand.
+      if (valueFlags.has(a) && argv[i + 1] !== undefined) out.push(argv[++i]);
+      continue;
+    }
+    const w = a.toLowerCase();
+    if (spec.booleans?.[w]) {
+      out.push(spec.booleans[w]);
+      continue;
+    }
+    if (spec.values?.[w]) {
+      out.push(spec.values[w]);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('-')) out.push(argv[++i]);
+      continue;
+    }
+    const bare = spec.bare?.(w);
+    if (bare) {
+      out.push(...bare);
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * Default store location, resolved the way the running session would:
+ *
+ *   1. CLAUDE_CONFIG_DIR, when set -- its settings.json autoMemoryDirectory,
+ *      else <config-dir>/memory. A sandboxed session relocates its whole
+ *      config this way; ignoring it made /memory-status report the REAL
+ *      store from inside a sandbox.
+ *   2. ~/.claude -- its settings.json autoMemoryDirectory, else
+ *      ~/.claude/memory.
+ */
 export function defaultStore() {
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  return path.join(home, '.claude', 'memory');
+  // A session with a relocated config never consults ~/.claude, so neither may we
+  const root = process.env.CLAUDE_CONFIG_DIR
+    ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
+    : path.join(home, '.claude');
+
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'utf8'));
+    if (typeof s?.autoMemoryDirectory === 'string' && s.autoMemoryDirectory.trim()) {
+      return resolveUserPath(s.autoMemoryDirectory);
+    }
+  } catch {}
+  return path.join(root, 'memory');
 }

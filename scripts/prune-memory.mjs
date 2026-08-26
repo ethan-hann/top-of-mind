@@ -1,32 +1,34 @@
 #!/usr/bin/env node
 /**
- * prune-memory.mjs -- frecency cap on Claude Code's file-based memory.
+ * prune-memory.mjs -- salience ranking and capping for Claude Code memory.
  *
  * Runs as a PostToolUse hook on Write|Edit|Read. Reads the hook payload from
  * stdin; if the touched file belongs to a memory store, scores that access,
- * caps the index, and re-ranks it.
+ * re-ranks the index, and retires the weakest entries once the store is over
+ * its cap.
  *
- * RANKING is frecency -- frequency AND recency in one number, not either
- * alone. Every access adds 1 point; banked points decay on a half-life. A
- * memory read 20 times stays hot for months; one read once cools in weeks.
+ * RANKING combines frequency and recency in one number. Every access adds a
+ * point; banked points decay on a half-life.
  *
- *     effective = score * 0.5 ^ (daysSince(last) / halfLifeDays)
- *     on access: score = effective + 1; count += 1; last = now
+ *     salience   = score * 0.5 ^ (daysSince(last) / halfLifeDays)
+ *     on recall:   score = salience + 1; count += 1; last = now
  *
- * PINNING -- two independent routes to un-evictable:
+ * OBSERVE-ONLY UNTIL CONFIGURED. There is no default cap. Until a store has
+ * one, this scores and re-ranks but never retires anything, and says so once.
+ * Shipping a default cap would silently destroy the memories of anyone whose
+ * store is bigger than the number we picked.
+ *
+ * RETIRING defaults to archiving into .archive/ rather than deleting. The
+ * index is what costs context, so dropping the line saves the same tokens
+ * either way, and nothing is destroyed. Set mode "delete" to remove outright.
+ *
+ * PINNING -- two independent routes to permanence:
  *   1. MANUAL (authoritative): `pinned: true` in the file's frontmatter.
- *      Never expires, never depends on counting.
- *   2. AUTOMATIC: accessed pinReads or more times. This leans on counts, and
- *      counts only rise on explicit tool calls -- a bonus, not a promise.
+ *   2. AUTOMATIC: accessed pinReads or more times. This depends on counts,
+ *      which only rise on explicit tool calls, so it is a bonus not a promise.
  *
- * When everything over cap is pinned, nothing is deleted, the index is allowed
- * to exceed the cap, and the hook reports it. An oversized index is
- * recoverable; a deleted memory is not.
- *
- * ORDERING: on a write the index is re-sorted by score, descending, but only
- * within each contiguous run of entry lines. Headings, blanks and prose stay
- * exactly where they are, so ## sections survive and each floats its own
- * hottest memory to the top.
+ * When everything over the cap is pinned, nothing is retired, the index is
+ * allowed to exceed the cap, and the hook reports it.
  *
  * Exits 0 on any error: a broken hook must never block a tool call.
  */
@@ -34,12 +36,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  CONFIG,
   WRITE_TOOLS,
   effective,
+  evictFile,
   isManuallyPinned,
+  loadConfig,
   loadState,
   parseIndex,
+  readLog,
   resolveStore,
   saveState,
 } from './lib.mjs';
@@ -70,61 +74,64 @@ function main() {
   if (!store) return;
 
   const { dir, indexPath, leaf, logPath } = store;
-  const { cap, pinReads } = CONFIG;
+  const cfg = loadConfig(dir);
   const now = Date.now();
 
   const { lines, entries } = parseIndex(indexPath);
   if (entries.length === 0) return;
   const indexed = [...new Set(entries.map((e) => e.file))];
 
+  const meta = readLog(logPath).meta ?? {};
   const state = loadState(dir, logPath, indexed);
 
   // --- record this access ----------------------------------------------
   if (leaf !== 'MEMORY.md' && !leaf.startsWith('.') && state.has(leaf)) {
     const st = state.get(leaf);
-    st.score = effective(st, now) + 1;
+    st.score = effective(st, now, cfg.halfLifeDays) + 1;
     st.count += 1;
     st.last = now;
   }
 
   const isWrite = WRITE_TOOLS.has(payload.tool_name);
 
-  // --- evict, but only on a write --------------------------------------
-  const evicted = [];
+  // --- retire the weakest, but only on a write and only once configured --
+  const retired = [];
   let stalled = 0;
   let nManual = 0;
   let nAuto = 0;
   const manualPin = new Map();
 
-  if (isWrite) {
-    // Frontmatter is only worth reading when eviction is actually on the table.
-    if (indexed.length > cap) {
+  if (isWrite && cfg.configured) {
+    // Frontmatter is only worth reading when retirement is actually on the table.
+    if (indexed.length > cfg.cap) {
       for (const f of indexed) manualPin.set(f, isManuallyPinned(path.join(dir, f)));
       nManual = indexed.filter((f) => manualPin.get(f)).length;
-      nAuto = indexed.filter((f) => !manualPin.get(f) && state.get(f).count >= pinReads).length;
+      nAuto = indexed.filter((f) => !manualPin.get(f) && state.get(f).count >= cfg.pinReads).length;
     }
     for (;;) {
-      const live = indexed.filter((f) => !evicted.includes(f));
-      if (live.length <= cap) break;
-      const cand = live.filter((f) => !manualPin.get(f) && state.get(f).count < pinReads);
+      const live = indexed.filter((f) => !retired.includes(f));
+      if (live.length <= cfg.cap) break;
+      const cand = live.filter((f) => !manualPin.get(f) && state.get(f).count < cfg.pinReads);
       if (cand.length === 0) {
-        stalled = live.length - cap;
+        stalled = live.length - cfg.cap;
         break;
       }
       cand.sort((a, b) => {
-        const d = effective(state.get(a), now) - effective(state.get(b), now);
+        const d =
+          effective(state.get(a), now, cfg.halfLifeDays) -
+          effective(state.get(b), now, cfg.halfLifeDays);
         return d !== 0 ? d : state.get(a).last - state.get(b).last;
       });
       const victim = cand[0];
       try {
-        fs.rmSync(path.join(dir, victim), { force: true });
+        evictFile(dir, victim, cfg.mode);
       } catch {}
       state.delete(victim);
-      evicted.push(victim);
+      retired.push(victim);
     }
   }
 
-  // --- rebuild the index: drop evicted, rank within each run ------------
+  // --- rebuild the index: drop retired, rank within each run -------------
   if (isWrite) {
     const byLine = new Map(entries.map((e) => [e.line, e.file]));
     const out = [];
@@ -138,10 +145,14 @@ function main() {
       const run = [];
       while (i < lines.length && byLine.has(i)) {
         const f = byLine.get(i);
-        if (!evicted.includes(f)) run.push({ text: lines[i], file: f });
+        if (!retired.includes(f)) run.push({ text: lines[i], file: f });
         i++;
       }
-      run.sort((a, b) => effective(state.get(b.file), now) - effective(state.get(a.file), now));
+      run.sort(
+        (a, b) =>
+          effective(state.get(b.file), now, cfg.halfLifeDays) -
+          effective(state.get(a.file), now, cfg.halfLifeDays)
+      );
       for (const r of run) out.push(r.text);
     }
     const next = out.join('\n').replace(/\s+$/, '') + '\n';
@@ -153,29 +164,47 @@ function main() {
     }
   }
 
-  try {
-    saveState(logPath, state);
-  } catch {}
-
   // --- report -----------------------------------------------------------
   const msgs = [];
   const ctx = [];
-  if (evicted.length > 0) {
-    const list = evicted.join(', ');
-    msgs.push(`Memory pruned to ${cap} - deleted: ${list}`);
-    ctx.push(
-      `Memory hit its ${cap}-entry cap. These lowest-frecency memories were permanently deleted and removed from MEMORY.md: ${list}. Do not reference them; any [[wikilinks]] pointing at them are now dangling.`
-    );
-  }
-  if (stalled > 0) {
-    const why = `${nManual} pinned via frontmatter, ${nAuto} auto-pinned at ${pinReads}+ accesses`;
+
+  // Say once, per store, that nothing is being capped yet.
+  // Only nag when no cap was ever chosen. A store that has one and is paused
+  // is a deliberate choice, not something to prompt about.
+  let announced = meta.observeAnnounced === true;
+  if (!cfg.hasCap && !announced) {
+    announced = true;
     msgs.push(
-      `Memory is ${stalled} over the ${cap} cap and CANNOT prune - every evictable entry is pinned (${why}). Nothing was deleted. Unpin something, prune by hand, or raise TOP_OF_MIND_CAP.`
+      `top-of-mind is tracking ${indexed.length} memories but no cap is set, so nothing will be retired. Run /memory-setup to choose one.`
     );
     ctx.push(
-      `Memory is ${stalled} entries over the ${cap} cap and nothing could be evicted: every remaining entry is pinned (${why}). The index will keep growing until the user unpins something, prunes by hand, or raises the cap. Mention this.`
+      `top-of-mind is in observe-only mode on this store: it is ranking ${indexed.length} memories but will never retire any until a cap is set. Tell the user to run /memory-setup to pick a cap, and make clear nothing has been or will be removed until they do.`
     );
   }
+
+  if (retired.length > 0) {
+    const list = retired.join(', ');
+    const verb = cfg.mode === 'delete' ? 'deleted' : 'archived to .archive/';
+    msgs.push(`Memory capped at ${cfg.cap} - ${verb}: ${list}`);
+    ctx.push(
+      `Memory hit its ${cfg.cap}-entry cap. These lowest-salience memories were ${verb} and removed from MEMORY.md: ${list}. Do not reference them; any [[wikilinks]] pointing at them are now dangling.`
+    );
+  }
+
+  if (stalled > 0) {
+    const why = `${nManual} pinned via frontmatter, ${nAuto} auto-pinned at ${cfg.pinReads}+ accesses`;
+    msgs.push(
+      `Memory is ${stalled} over the ${cfg.cap} cap and cannot shrink - every remaining entry is pinned (${why}). Nothing was removed. Unpin something or raise the cap with /memory-setup.`
+    );
+    ctx.push(
+      `Memory is ${stalled} entries over the ${cfg.cap} cap and nothing could be retired: every remaining entry is pinned (${why}). The index will keep growing until the user unpins something or raises the cap. Mention this.`
+    );
+  }
+
+  try {
+    saveState(logPath, state, { ...meta, observeAnnounced: announced });
+  } catch {}
+
   if (msgs.length > 0) {
     process.stdout.write(
       JSON.stringify({

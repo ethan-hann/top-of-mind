@@ -13,23 +13,28 @@
 
 import fs from 'node:fs';
 import {
-  CONFIG,
+  loadConfig,
   defaultStore,
   effective,
   isManuallyPinned,
   loadState,
+  normalizeArgs,
   parseIndex,
+  resolveUserPath,
 } from './lib.mjs';
 import path from 'node:path';
 
-const argv = process.argv.slice(2);
+const argv = normalizeArgs(process.argv.slice(2), {
+  booleans: { pinned: '--pinned', json: '--json' },
+  values: { path: '--path', store: '--path' },
+});
 const has = (f) => argv.includes(f);
 const val = (f, d) => {
   const i = argv.indexOf(f);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
 };
 
-const dir = path.resolve(val('--path', defaultStore()));
+const dir = resolveUserPath(val('--path', defaultStore()));
 const pinnedOnly = has('--pinned');
 const asJson = has('--json');
 
@@ -39,7 +44,8 @@ if (!fs.existsSync(indexPath)) {
   process.exit(1);
 }
 
-const { cap, halfLifeDays, pinReads } = CONFIG;
+const cfg = loadConfig(dir);
+const { cap, halfLifeDays, pinReads } = cfg;
 const { entries } = parseIndex(indexPath);
 if (entries.length === 0) {
   console.log(`No memories indexed in ${indexPath}`);
@@ -55,7 +61,7 @@ let rows = entries.map((e) => {
   const manual = isManuallyPinned(path.join(dir, e.file));
   const auto = st.count >= pinReads;
   return {
-    score: Math.round(effective(st, now) * 100) / 100,
+    score: Math.round(effective(st, now, halfLifeDays) * 100) / 100,
     reads: st.count,
     ageDays: Math.round((now - st.last) / 86400000),
     pin: manual ? 'MANUAL' : auto ? 'auto' : '',
@@ -70,24 +76,53 @@ if (pinnedOnly) rows = rows.filter((r) => r.pin);
 const nManual = rows.filter((r) => r.pin === 'MANUAL').length;
 const nAuto = rows.filter((r) => r.pin === 'auto').length;
 const total = entries.length;
-const free = cap - total;
+const free = cap === null ? null : cap - total;
 
 if (asJson) {
-  console.log(JSON.stringify({ store: dir, cap, halfLifeDays, pinReads, total, free, rows }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        store: dir,
+        configured: cfg.configured,
+        active: cfg.active,
+        hasCap: cfg.hasCap,
+        cap,
+        mode: cfg.mode,
+        halfLifeDays,
+        pinReads,
+        total,
+        free,
+        rows,
+      },
+      null,
+      2
+    )
+  );
   process.exit(0);
 }
 
 const C = process.stdout.isTTY
   ? { dim: '\x1b[90m', red: '\x1b[31m', yel: '\x1b[33m', grn: '\x1b[32m', off: '\x1b[0m' }
   : { dim: '', red: '', yel: '', grn: '', off: '' };
-const freeColor = free < 0 ? C.red : free <= 5 ? C.yel : C.grn;
 
 console.log('');
 console.log(`Memory store: ${dir}`);
-console.log(
-  `${total} entries / cap ${cap}   ${freeColor}${free} free${C.off}   ` +
-    `pinned: ${nManual} manual, ${nAuto} auto (${pinReads}+ reads)   half-life ${halfLifeDays}d`
-);
+if (cfg.configured) {
+  const freeColor = free < 0 ? C.red : free <= 5 ? C.yel : C.grn;
+  console.log(
+    `${total} entries / cap ${cap}   ${freeColor}${free} free${C.off}   ` +
+      `pinned: ${nManual} manual, ${nAuto} auto (${pinReads}+ reads)   ` +
+      `half-life ${halfLifeDays}d   mode ${cfg.mode}`
+  );
+} else {
+  const why = cfg.hasCap
+    ? `capping OFF - cap ${cap} kept, nothing retired`
+    : 'no cap set - nothing is retired';
+  console.log(
+    `${total} entries   ${C.yel}${why}${C.off}   ` +
+      `pinned: ${nManual} manual, ${nAuto} auto (${pinReads}+ reads)   half-life ${halfLifeDays}d`
+  );
+}
 console.log('');
 
 const w = (s, n) => String(s).padEnd(n);
@@ -105,12 +140,21 @@ for (const x of rows) {
 console.log('');
 
 if (!pinnedOnly) {
-  if (free < 0) process.stdout.write(`${C.red}OVER CAP by ${-free}.${C.off} `);
-  const next = rows.filter((x) => x.evictable).slice(-3).reverse();
-  if (next.length > 0) {
-    console.log(`${C.dim}Next to be evicted: ${next.map((x) => x.memory).join(', ')}${C.off}`);
+  if (!cfg.configured) {
+    console.log(
+      cfg.hasCap
+        ? `${C.yel}Capping is off. Resume with /memory-setup on (cap ${cap}, mode ${cfg.mode} are kept).${C.off}`
+        : `${C.yel}No cap is set, so nothing is retired. Run /memory-setup to choose one.${C.off}`
+    );
   } else {
-    console.log(`${C.yel}Nothing is evictable - every entry is pinned.${C.off}`);
+    if (free < 0) process.stdout.write(`${C.red}OVER CAP by ${-free}.${C.off} `);
+    const next = rows.filter((x) => x.evictable).slice(-3).reverse();
+    if (next.length > 0) {
+      const verb = cfg.mode === 'delete' ? 'deleted' : 'archived';
+      console.log(`${C.dim}Next to be ${verb}: ${next.map((x) => x.memory).join(', ')}${C.off}`);
+    } else {
+      console.log(`${C.yel}Nothing can be retired - every entry is pinned.${C.off}`);
+    }
   }
   console.log(`${C.dim}Pin a memory by adding  pinned: true  to its frontmatter.${C.off}`);
   console.log('');
