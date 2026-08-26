@@ -18,9 +18,15 @@ note weighted the same, kept forever, costing tokens on every turn.
 
 ## Quick start
 
+A couple of ways to install the plugin depending on where you use Claude Code:
+
+<detail>
+<summary>test</summary>
+<detail>
+
 ```
 /plugin marketplace add ethan-hann/top-of-mind
-/plugin install top-of-mind@top-of-mind
+/plugin install ethan-hann@top-of-mind
 /memory-setup
 ```
 
@@ -28,7 +34,7 @@ Or from a local clone of this repo, point the marketplace at the directory:
 
 ```
 /plugin marketplace add /path/to/top-of-mind
-/plugin install top-of-mind@top-of-mind
+/plugin install ethan-hann@top-of-mind
 ```
 
 Either way the plugin id is `ethan-hann@top-of-mind`
@@ -37,7 +43,7 @@ The same two steps run from a shell, outside a session:
 
 ```
 claude plugin marketplace add ethan-hann/top-of-mind
-claude plugin install top-of-mind@top-of-mind
+claude plugin install ethan-hann@top-of-mind
 ```
 
 `marketplace add` takes the same sources here - a GitHub `owner/repo`, a URL,
