@@ -1,0 +1,13 @@
+{
+  "name": "top-of-mind",
+  "owner": {
+    "name": "Ethan Hann"
+  },
+  "plugins": [
+    {
+      "name": "top-of-mind",
+      "source": "./",
+      "description": "Long-term memory for Claude Code: what you use stays at the front of Claude's mind, what you never touch fades, and pinned memories are never forgotten."
+    }
+  ]
+}
