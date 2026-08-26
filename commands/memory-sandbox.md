@@ -6,10 +6,11 @@ allowed-tools: Bash(node:*)
 
 !`node "${CLAUDE_PLUGIN_ROOT}/test/sandbox.mjs" $ARGUMENTS`
 
-Relay the output above to the user:
+The command output above is visible only to you, not to the user. Relay it:
 
-- Give them the one launch command, exactly as printed. Tell them to run it in
-  a separate terminal, not in this session.
+- Reproduce the launch command verbatim in a fenced code block - it must be
+  exact, so do not retype or reword it. Tell them to run it in a separate
+  terminal, not in this session.
 - Repeat the isolation check: the sandboxed session will ask them to log in,
   and a session that comes up already logged in is not sandboxed and should be
   closed.

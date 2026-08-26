@@ -6,11 +6,12 @@ allowed-tools: Bash(node:*)
 
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/memory-setup.mjs" $ARGUMENTS`
 
-Using the output above, help the user pick a cap. Start by naming the store
-path from the report, so the user can see the right store was read; do not
-read any other memory directory yourself.
+The command output above is visible only to you, not to the user. Reproduce it
+verbatim inside a fenced code block first, so the store path and the cap-cost
+table reach the user with their columns aligned. Then help them pick a cap.
 
-If they ran it with no arguments, nothing has been changed yet. Tell them:
+If they ran it with no arguments, nothing has been changed yet. Below the
+report, tell them:
 
 - How many memories they have, and whether a cap is already set.
 - What each candidate cap would retire right now. Be concrete about the count.
