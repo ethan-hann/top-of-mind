@@ -18,6 +18,7 @@ import {
   effective,
   isManuallyPinned,
   loadState,
+  missingStoreMessage,
   normalizeArgs,
   parseIndex,
   resolveUserPath,
@@ -34,13 +35,14 @@ const val = (f, d) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
 };
 
-const dir = resolveUserPath(val('--path', defaultStore()));
+const explicit = val('--path', null);
+const dir = explicit ? resolveUserPath(explicit) : defaultStore();
 const pinnedOnly = has('--pinned');
 const asJson = has('--json');
 
 const indexPath = path.join(dir, 'MEMORY.md');
 if (!fs.existsSync(indexPath)) {
-  console.error(`No MEMORY.md at ${dir}`);
+  console.error(explicit ? `No MEMORY.md at ${dir}` : missingStoreMessage());
   process.exit(1);
 }
 

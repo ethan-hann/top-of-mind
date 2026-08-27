@@ -319,27 +319,105 @@ export function normalizeArgs(argv, spec = {}) {
 }
 
 /**
- * Default store location, resolved the way the running session would:
- *
- *   1. CLAUDE_CONFIG_DIR, when set -- its settings.json autoMemoryDirectory,
- *      else <config-dir>/memory. A sandboxed session relocates its whole
- *      config this way; ignoring it made /memory-status report the REAL
- *      store from inside a sandbox.
- *   2. ~/.claude -- its settings.json autoMemoryDirectory, else
- *      ~/.claude/memory.
+ * Slugify an absolute path the way Claude Code names its per-project
+ * directories under <config>/projects: every character that is not a letter
+ * or digit becomes '-', with no collapsing of runs. So `G:\Dev\My App`
+ * becomes `G--Dev-My-App`. This is how we find the project-scoped store a
+ * default (unconfigured) session writes to.
  */
-export function defaultStore() {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  // A session with a relocated config never consults ~/.claude, so neither may we
-  const root = process.env.CLAUDE_CONFIG_DIR
-    ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
-    : path.join(home, '.claude');
+export function projectSlug(cwd) {
+  return String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+}
 
+/** autoMemoryDirectory from a settings.json, resolved, or null if absent. */
+function autoMemoryFrom(settingsPath) {
   try {
-    const s = JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'utf8'));
+    const s = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     if (typeof s?.autoMemoryDirectory === 'string' && s.autoMemoryDirectory.trim()) {
       return resolveUserPath(s.autoMemoryDirectory);
     }
   } catch {}
-  return path.join(root, 'memory');
+  return null;
+}
+
+/**
+ * Every directory a running session might keep its auto-memory store in, most
+ * specific first, each tagged with a human label for diagnostics. Mirrors how
+ * Claude Code resolves the store:
+ *
+ *   1. an explicit autoMemoryDirectory, checked across the same settings files
+ *      the session merges -- project .claude/settings.local.json, then project
+ *      .claude/settings.json, then user settings.json (nearest wins);
+ *   2. otherwise the project-scoped default, <config>/projects/<slug>/memory,
+ *      which is where an unconfigured session actually writes; and
+ *   3. the legacy global <config>/memory as the final fallback, so stores
+ *      created by older versions still resolve.
+ *
+ * CLAUDE_CONFIG_DIR relocates the whole config root (a sandboxed session does
+ * this); when set we never consult ~/.claude, matching the session itself.
+ * Overridable inputs keep this testable without touching env or the real cwd.
+ */
+export function storeCandidates({
+  cwd = process.cwd(),
+  configDir = process.env.CLAUDE_CONFIG_DIR,
+  home = process.env.HOME || process.env.USERPROFILE || '',
+} = {}) {
+  const root = configDir ? path.resolve(configDir) : path.join(home, '.claude');
+  const absCwd = path.resolve(cwd);
+
+  const out = [];
+  const seen = new Set();
+  const add = (label, dir) => {
+    if (!dir) return;
+    const resolved = path.resolve(dir);
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    out.push({ label, dir: resolved });
+  };
+
+  add(
+    'autoMemoryDirectory (.claude/settings.local.json)',
+    autoMemoryFrom(path.join(absCwd, '.claude', 'settings.local.json')),
+  );
+  add(
+    'autoMemoryDirectory (.claude/settings.json)',
+    autoMemoryFrom(path.join(absCwd, '.claude', 'settings.json')),
+  );
+  add('autoMemoryDirectory (user settings.json)', autoMemoryFrom(path.join(root, 'settings.json')));
+  add('project store', path.join(root, 'projects', projectSlug(absCwd), 'memory'));
+  add('global store', path.join(root, 'memory'));
+
+  return out;
+}
+
+/**
+ * The store a report/setup command should operate on: the first candidate that
+ * actually holds a MEMORY.md, so an existing store is found wherever it lives
+ * -- project-scoped, a configured directory, or the legacy global path. When
+ * none exist yet, fall back to the most specific candidate, the project-scoped
+ * path a fresh session would create, rather than the old global guess.
+ */
+export function defaultStore(opts = {}) {
+  const candidates = storeCandidates(opts);
+  const found = candidates.find((c) => fs.existsSync(path.join(c.dir, 'MEMORY.md')));
+  return (found ?? candidates[0]).dir;
+}
+
+/**
+ * A multi-line, self-diagnosing message for when no default store was found:
+ * every candidate path that was checked, most specific first, each marked
+ * found/missing, so the reason is visible without guessing. Used by the
+ * report/setup commands when they resolve the store themselves (no --path).
+ */
+export function missingStoreMessage(opts = {}) {
+  const lines = ['No MEMORY.md found. Checked, most specific first:'];
+  for (const c of storeCandidates(opts)) {
+    const mark = fs.existsSync(path.join(c.dir, 'MEMORY.md')) ? 'found  ' : 'missing';
+    lines.push(`  [${mark}] ${c.dir}  (${c.label})`);
+  }
+  lines.push('');
+  lines.push(
+    'Save a memory in the project store above to start one, or set autoMemoryDirectory in settings.json to choose the location.',
+  );
+  return lines.join('\n');
 }

@@ -131,10 +131,16 @@ to exceed the cap, and the hook reports it. An oversized index is easy to fix.
 | `/memory-status json` | Machine-readable output |
 | `/memory-sandbox` | Build a throwaway store to try the plugin against |
 
-Both take `path <dir>` to target a store other than the global one. Flag forms
-(`--cap`, `--mode`, `--on`, `--off`, `--reset`, `--path`) work too, for
-scripting. Run them directly as `node scripts/memory-status.mjs` or
-`scripts/memory-setup.mjs`.
+With no `path`, both detect the store the current session uses, checking the
+same places in the same order Claude Code does: an `autoMemoryDirectory` from
+settings (project `.claude/settings.local.json`, then project
+`.claude/settings.json`, then user `settings.json`), then the per-project
+default at `<config>/projects/<project>/memory`, then the legacy global
+`<config>/memory` — landing on the first that holds a `MEMORY.md`. When none
+exists yet they name every path they checked. Pass `path <dir>` to target a
+different store. Flag forms (`--cap`, `--mode`, `--on`, `--off`, `--reset`,
+`--path`) work too, for scripting. Run them directly as
+`node scripts/memory-status.mjs` or `scripts/memory-setup.mjs`.
 
 ```
 Memory store: /home/you/.claude/memory

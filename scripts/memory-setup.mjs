@@ -22,6 +22,7 @@ import {
   isManuallyPinned,
   loadConfig,
   loadState,
+  missingStoreMessage,
   normalizeArgs,
   parseIndex,
   resolveUserPath,
@@ -51,17 +52,18 @@ memory-setup - choose a cap for a memory store
   memory-setup on                   resume with the settings you had
   memory-setup reset                discard settings entirely
 
-  path <dir>                        target a store other than the global one
+  path <dir>                        target a store other than the detected one
 
 Flag forms (--cap, --mode, --off, --path) work too.
 `);
   process.exit(0);
 }
 
-const dir = resolveUserPath(val('--path', defaultStore()));
+const explicit = val('--path', null);
+const dir = explicit ? resolveUserPath(explicit) : defaultStore();
 const indexPath = path.join(dir, 'MEMORY.md');
 if (!fs.existsSync(indexPath)) {
-  console.error(`No MEMORY.md at ${dir}`);
+  console.error(explicit ? `No MEMORY.md at ${dir}` : missingStoreMessage());
   process.exit(1);
 }
 

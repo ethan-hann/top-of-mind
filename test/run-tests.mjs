@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { defaultStore, projectSlug, storeCandidates } from '../scripts/lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.join(HERE, '..', 'scripts', 'prune-memory.mjs');
@@ -558,6 +559,68 @@ console.log('\n--- bad input ---');
 {
   const out = execFileSync(process.execPath, [HOOK], { input: 'not json at all', encoding: 'utf8' });
   check('survives non-JSON stdin', out === '');
+}
+
+console.log('\n--- store resolution ---');
+{
+  // Claude Code's project slug: every non-alphanumeric char becomes '-', no
+  // collapsing of runs. These are real slugs observed on disk.
+  check(
+    'projectSlug matches Windows drive path',
+    projectSlug('G:\\Development\\Github\\top-of-mind') === 'G--Development-Github-top-of-mind',
+  );
+  check(
+    'projectSlug matches a spaced, dotted path',
+    projectSlug('C:\\Users\\Ethan\\Documents\\.SCRIPTS\\P66 Billable') ===
+      'C--Users-Ethan-Documents--SCRIPTS-P66-Billable',
+  );
+}
+{
+  // A fake config root, so nothing touches the real ~/.claude.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tom-cfg-'));
+  const cwd = path.join(root, 'work', 'My Project');
+  const slug = projectSlug(path.resolve(cwd));
+  const projStore = path.join(root, 'projects', slug, 'memory');
+  const globalStore = path.join(root, 'memory');
+  const opts = { cwd, configDir: root, home: root };
+  const seed = (dir) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'), '# Memory\n', 'utf8');
+  };
+
+  // Nothing exists yet: resolve to the project-scoped path a fresh session
+  // would create -- not the legacy global guess. This is the reported bug.
+  check(
+    'first-run resolves to the project store',
+    defaultStore(opts) === path.resolve(projStore),
+    defaultStore(opts),
+  );
+
+  // Only a legacy global store exists: still found (backward compatible).
+  seed(globalStore);
+  check('an existing global store is found', defaultStore(opts) === path.resolve(globalStore));
+
+  // Both exist: the more specific project store wins.
+  seed(projStore);
+  check('the project store wins over global', defaultStore(opts) === path.resolve(projStore));
+
+  // An explicit autoMemoryDirectory in user settings.json beats both defaults.
+  const configured = path.join(root, 'chosen-memory');
+  seed(configured);
+  fs.writeFileSync(
+    path.join(root, 'settings.json'),
+    JSON.stringify({ autoMemoryDirectory: configured }),
+    'utf8',
+  );
+  check(
+    'autoMemoryDirectory overrides the defaults',
+    defaultStore(opts) === path.resolve(configured),
+    defaultStore(opts),
+  );
+  check(
+    '  and leads the candidate list',
+    storeCandidates(opts)[0].dir === path.resolve(configured),
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
