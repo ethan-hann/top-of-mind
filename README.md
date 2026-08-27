@@ -112,7 +112,13 @@ reach for.
 
 Two independent routes to permanence.
 
-**Manual, and authoritative.** Add `pinned: true` to a memory's frontmatter:
+**Manual, and authoritative.** Pin a memory by name from a session:
+
+```
+/memory-pin avoid-em-dashes
+```
+
+That adds `pinned: true` to the memory's frontmatter:
 
 ```yaml
 ---
@@ -121,11 +127,14 @@ pinned: true
 ---
 ```
 
-It never expires and never depends on access counting.
+A partial name or title works too. When it is not an exact match you are shown
+the candidates and asked which one you meant before anything is pinned. Unpin
+with `/memory-pin unpin <name>`. A pinned memory never expires and never depends
+on access counting.
 
-Claude Code normalizes frontmatter on save and may move the key under
-`metadata:`. Both forms work, because the key is matched at any indentation.
-The same text in the body is ignored.
+You can still edit the frontmatter by hand. Claude Code normalizes it on save
+and may move the key under `metadata:`. Both forms work, because the key is
+matched at any indentation. The same text in the body is ignored.
 
 **Automatic.** Any memory accessed 5 or more times. This depends on counts, so
 treat it as a bonus rather than a guarantee. See
@@ -148,9 +157,11 @@ to exceed the cap, and the hook reports it. An oversized index is easy to fix.
 | `/memory-status` | Full ranking |
 | `/memory-status pinned` | Pinned entries only |
 | `/memory-status json` | Machine-readable output |
+| `/memory-pin <name>` | Pin a memory by name, so it is never retired |
+| `/memory-pin unpin <name>` | Remove a manual pin |
 | `/memory-sandbox` | Build a throwaway store to try the plugin against |
 
-With no `path`, both commands detect the store the current session uses. They
+With no `path`, the commands detect the store the current session uses. They
 check the same locations, in the same order, that Claude Code itself checks,
 and use the first one that holds a `MEMORY.md`:
 
@@ -366,7 +377,7 @@ inside the sandbox. That login stays in the sandbox.
 node test/run-tests.mjs
 ```
 
-82 tests cover:
+101 tests cover:
 
 - store resolution (`CLAUDE_CONFIG_DIR` isolation, `~` and absolute paths)
 - observe-only mode
@@ -380,6 +391,7 @@ node test/run-tests.mjs
 - scoring
 - retire order
 - both pin routes
+- pinning and unpinning by name (exact, fuzzy, and the frontmatter edit)
 - the stall path
 - index rebuilding
 - recovery from corrupt or absent input

@@ -159,6 +159,85 @@ export function isManuallyPinned(file) {
 }
 
 /**
+ * Add or remove the manual `pinned: true` flag in a memory file's frontmatter.
+ * Idempotent, and it preserves the file's existing line endings. Returns:
+ *   'pinned'         the flag was added
+ *   'already-pinned' the flag was already there, nothing changed
+ *   'unpinned'       the flag was removed
+ *   'not-pinned'     there was no manual flag to remove, nothing changed
+ * Pinning a file that somehow has no frontmatter prepends a minimal block, so
+ * the flag always lands somewhere the reader (isManuallyPinned) will find it.
+ */
+export function setManualPin(file, on) {
+  const text = fs.readFileSync(file, 'utf8');
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const hasFm = lines[0]?.trim() === '---';
+  let close = -1;
+  if (hasFm) {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === '---') {
+        close = i;
+        break;
+      }
+    }
+  }
+
+  if (on) {
+    if (hasFm && close > 0) {
+      for (let i = 1; i < close; i++) if (PIN_RE.test(lines[i])) return 'already-pinned';
+      // Sit the flag just under name:, or right after the opening --- if there is none.
+      let at = 0;
+      for (let i = 1; i < close; i++) if (/^name\s*:/.test(lines[i])) { at = i; break; }
+      lines.splice(at + 1, 0, 'pinned: true');
+      fs.writeFileSync(file, lines.join(eol), 'utf8');
+      return 'pinned';
+    }
+    fs.writeFileSync(file, ['---', 'pinned: true', '---', '', ''].join(eol) + text, 'utf8');
+    return 'pinned';
+  }
+
+  if (!hasFm || close < 0) return 'not-pinned';
+  let removed = false;
+  const kept = lines.filter((l, i) => {
+    if (i > 0 && i < close && PIN_RE.test(l)) {
+      removed = true;
+      return false;
+    }
+    return true;
+  });
+  if (!removed) return 'not-pinned';
+  fs.writeFileSync(file, kept.join(eol), 'utf8');
+  return 'unpinned';
+}
+
+/**
+ * Resolve a user's query to indexed memory entries. Returns
+ * { exact, candidates }: `exact` is set only when the query equals a filename
+ * or its slug (case-insensitive), the unambiguous case that may apply without
+ * confirmation. Otherwise `candidates` holds fuzzy substring matches against
+ * the slug and the title, best (prefix) matches first, for the caller to
+ * confirm before acting.
+ */
+export function resolveMemoryQuery(entries, query) {
+  const q = String(query).trim().toLowerCase();
+  const slug = (f) => f.replace(/\.md$/i, '').toLowerCase();
+  const exact = entries.find((e) => e.file.toLowerCase() === q || slug(e.file) === q) || null;
+  if (exact) return { exact, candidates: [exact] };
+  if (!q) return { exact: null, candidates: [] };
+  const rank = (e) => {
+    const s = slug(e.file);
+    const t = (e.title || '').toLowerCase();
+    if (s.startsWith(q)) return 3;
+    if (t.startsWith(q)) return 2;
+    if (s.includes(q) || t.includes(q)) return 1;
+    return 0;
+  };
+  const candidates = entries.filter((e) => rank(e) > 0).sort((a, b) => rank(b) - rank(a));
+  return { exact: null, candidates };
+}
+
+/**
  * Resolve a touched file to the memory store that owns it, or null.
  * A store is a directory named "memory", under a .claude dir, holding a
  * MEMORY.md. That covers the global store (autoMemoryDirectory) and the

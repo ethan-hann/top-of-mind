@@ -14,7 +14,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultStore, projectSlug, storeCandidates } from '../scripts/lib.mjs';
+import {
+  defaultStore,
+  isManuallyPinned,
+  projectSlug,
+  resolveMemoryQuery,
+  setManualPin,
+  storeCandidates,
+} from '../scripts/lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.join(HERE, '..', 'scripts', 'prune-memory.mjs');
@@ -621,6 +628,89 @@ console.log('\n--- store resolution ---');
     '  and leads the candidate list',
     storeCandidates(opts)[0].dir === path.resolve(configured),
   );
+}
+
+console.log('\n--- pin resolution ---');
+{
+  const entries = [
+    { file: 'avoid-em-dashes.md', title: 'Avoid em dashes', section: 'General' },
+    { file: 'never-touch-main.md', title: 'Never touch main', section: 'Keystone' },
+    { file: 'dispatcherr-ui-mockups-first.md', title: 'UI mockups first', section: 'Dispatcherr' },
+  ];
+  const byFile = resolveMemoryQuery(entries, 'avoid-em-dashes.md');
+  check('exact filename match', byFile.exact?.file === 'avoid-em-dashes.md');
+  const bySlug = resolveMemoryQuery(entries, 'avoid-em-dashes');
+  check('exact slug match (no .md)', bySlug.exact?.file === 'avoid-em-dashes.md');
+  const casey = resolveMemoryQuery(entries, 'Avoid-Em-Dashes');
+  check('exact match is case-insensitive', casey.exact?.file === 'avoid-em-dashes.md');
+  const fuzzySlug = resolveMemoryQuery(entries, 'mockups');
+  check(
+    'fuzzy slug substring, no exact',
+    !fuzzySlug.exact && fuzzySlug.candidates.length === 1 && fuzzySlug.candidates[0].file === 'dispatcherr-ui-mockups-first.md',
+  );
+  const fuzzyTitle = resolveMemoryQuery(entries, 'em dashes');
+  check(
+    'fuzzy title substring (spaces)',
+    !fuzzyTitle.exact && fuzzyTitle.candidates.some((c) => c.file === 'avoid-em-dashes.md'),
+  );
+  const many = resolveMemoryQuery(entries, 'e');
+  check('ambiguous fuzzy returns several, no exact', !many.exact && many.candidates.length > 1);
+  const none = resolveMemoryQuery(entries, 'zzzznope');
+  check('no match returns empty', !none.exact && none.candidates.length === 0);
+}
+
+console.log('\n--- pin frontmatter mutation ---');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'topofmind-pin-'));
+  const write = (name, body) => {
+    const p = path.join(tmp, name);
+    fs.writeFileSync(p, body, 'utf8');
+    return p;
+  };
+  const a = write('a.md', '---\nname: a\ndescription: x\n---\n\nBody.\n');
+  check('setManualPin adds the flag', setManualPin(a, true) === 'pinned');
+  check('  and isManuallyPinned sees it', isManuallyPinned(a));
+  check('  pinning again is a no-op', setManualPin(a, true) === 'already-pinned');
+  check('setManualPin removes the flag', setManualPin(a, false) === 'unpinned');
+  check('  and isManuallyPinned no longer sees it', !isManuallyPinned(a));
+  check('  unpinning again is a no-op', setManualPin(a, false) === 'not-pinned');
+
+  // CRLF is preserved.
+  const b = write('b.md', '---\r\nname: b\r\n---\r\n\r\nBody.\r\n');
+  setManualPin(b, true);
+  check('preserves CRLF line endings', fs.readFileSync(b, 'utf8').includes('\r\npinned: true\r\n'));
+
+  // No frontmatter: a block is created so the flag is still findable.
+  const c = write('c.md', 'Just a body, no frontmatter.\n');
+  check('pins a file with no frontmatter', setManualPin(c, true) === 'pinned' && isManuallyPinned(c));
+}
+
+console.log('\n--- memory-pin script ---');
+{
+  const PIN = path.join(HERE, '..', 'scripts', 'memory-pin.mjs');
+  const { dir } = newStore({ count: 3 });
+  const run = (...args) => {
+    try {
+      return execFileSync(process.execPath, [PIN, 'path', dir, ...args], { encoding: 'utf8' });
+    } catch (e) {
+      return String(e.stdout ?? '') + String(e.stderr ?? '');
+    }
+  };
+  // Exact slug pins immediately.
+  const out = run('m-01');
+  check('exact pin applies', /Pinned m-01\.md/.test(out) && isManuallyPinned(path.join(dir, 'm-01.md')));
+  // Unpin via the leading word.
+  const out2 = run('unpin', 'm-01');
+  check('unpin via leading word', /Unpinned m-01\.md/.test(out2) && !isManuallyPinned(path.join(dir, 'm-01.md')));
+  // A fuzzy query lists candidates and pins nothing.
+  const out3 = run('01');
+  check(
+    'fuzzy match does NOT pin, lists candidates',
+    /No exact match/.test(out3) && !isManuallyPinned(path.join(dir, 'm-01.md')),
+  );
+  // A miss is reported, nothing pinned.
+  const out4 = run('nonexistent-xyz');
+  check('no match is reported', /No memory matches/.test(out4));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

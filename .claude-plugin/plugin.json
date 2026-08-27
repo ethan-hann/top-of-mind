@@ -1,6 +1,6 @@
 {
   "name": "top-of-mind",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Long-term memory for Claude Code. Memories you use rise to the front of Claude's mind; ones you never touch fade and are eventually forgotten. Pin the ones that must never be forgotten.",
   "author": {
     "name": "Ethan Hann"
@@ -19,6 +19,7 @@
   "commands": [
     "./commands/memory-status.md",
     "./commands/memory-setup.md",
+    "./commands/memory-pin.md",
     "./commands/memory-sandbox.md"
   ]
 }
