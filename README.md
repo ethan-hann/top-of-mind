@@ -46,12 +46,12 @@ claude plugin install top-of-mind@ethan-hann
 
 `marketplace add` takes the same sources here - a GitHub `owner/repo`, a git
 URL, or a local path. Add `--yes` to `install` to skip the confirmation
-prompt, and `--scope project` to install into the current project rather than
+prompt. Add `--scope project` to install into the current project rather than
 your user config - handy for scripts and CI.
 
 Installing changes nothing on its own. There is no default cap, so nothing is
 retired until you choose one. `/memory-setup` shows what each cap would retire
-before you commit; a cap at your current store size retires nothing today and
+before you commit. A cap at your current store size retires nothing today and
 bounds growth from here.
 
 Two more things worth doing on day one:
@@ -102,10 +102,11 @@ pinned: true
 ---
 ```
 
-It never expires and never depends on access counting. Claude Code normalizes
-frontmatter on save and may move the key under `metadata:`. Both forms work,
-because the key is matched at any indentation. The same text in the body is
-ignored.
+It never expires and never depends on access counting.
+
+Claude Code normalizes frontmatter on save and may move the key under
+`metadata:`. Both forms work, because the key is matched at any indentation.
+The same text in the body is ignored.
 
 **Automatic.** Any memory accessed 5 or more times. This depends on counts, so
 treat it as a bonus rather than a guarantee. See
@@ -130,15 +131,18 @@ to exceed the cap, and the hook reports it. An oversized index is easy to fix.
 | `/memory-status json` | Machine-readable output |
 | `/memory-sandbox` | Build a throwaway store to try the plugin against |
 
-With no `path`, both detect the store the current session uses, checking the
-same places in the same order Claude Code does: an `autoMemoryDirectory` from
-settings (project `.claude/settings.local.json`, then project
-`.claude/settings.json`, then user `settings.json`), then the per-project
-default at `<config>/projects/<project>/memory`, then the legacy global
-`<config>/memory` — landing on the first that holds a `MEMORY.md`. When none
-exists yet they name every path they checked. Pass `path <dir>` to target a
-different store. Flag forms (`--cap`, `--mode`, `--on`, `--off`, `--reset`,
-`--path`) work too, for scripting. Run them directly as
+With no `path`, both commands detect the store the current session uses. They
+check the same locations, in the same order, that Claude Code itself checks,
+and use the first one that holds a `MEMORY.md`:
+
+- an `autoMemoryDirectory` from settings (project `.claude/settings.local.json`,
+  then project `.claude/settings.json`, then user `settings.json`)
+- the per-project default at `<config>/projects/<project>/memory`
+- the legacy global `<config>/memory`
+
+When none exists yet, they name every path they checked. Pass `path <dir>` to
+target a different store. Flag forms (`--cap`, `--mode`, `--on`, `--off`,
+`--reset`, `--path`) work too, for scripting. Run them directly as
 `node scripts/memory-status.mjs` or `scripts/memory-setup.mjs`.
 
 ```
@@ -183,7 +187,7 @@ Environment variables override the file, per store:
 `TOP_OF_MIND_MODE`, `TOP_OF_MIND_ACTIVE`.
 
 The hook finds any directory named `memory` that sits under a `.claude`
-directory and holds a `MEMORY.md`, which covers both the global store
+directory and holds a `MEMORY.md`. This covers both the global store
 (`autoMemoryDirectory`) and the per-project default at
 `~/.claude/projects/<project>/memory`. Each store gets its own config file, so
 a global store and a project store can carry different caps.
@@ -191,8 +195,8 @@ a global store and a project store can carry different caps.
 ### Turning it off
 
 `/memory-setup off` sets `active: false`. Retiring stops, ranking continues,
-and your cap and mode stay on disk, so `/memory-setup on` picks up exactly
-where you left off rather than asking you to choose again.
+and your cap and mode stay on disk. So `/memory-setup on` picks up exactly
+where you left off, rather than asking you to choose again.
 
 `/memory-setup reset` is the destructive one: it deletes the config file and
 returns the store to observe-only, settings and all.
@@ -225,9 +229,9 @@ Hooks fire only on tool calls, so counting sees explicit Read, Write, and Edit
 and nothing else. If Claude Code ever injects a recalled memory into context
 through a `<system-reminder>`, no tool runs and that use goes unrecorded.
 
-Measured across 82 transcripts on 2026-08-26, no such injection happens, so
-counts currently capture every real access path. That could change, which is
-why manual pinning exists and overrides counting.
+No such injection happens. That holds across the 82 transcripts measured on
+2026-08-26, so counts currently capture every real access path. That could
+change, which is why manual pinning exists and overrides counting.
 
 ## Safety
 
@@ -255,7 +259,7 @@ nothing. So install it, then build the sandbox from inside any session:
 /memory-sandbox
 ```
 
-No repo checkout needed; the command ships with the plugin. It takes the same
+No repo checkout needed. The command ships with the plugin. It takes the same
 plain arguments as the others: `memories 50`, `cap 10`, `path <dir>`. From a
 repo checkout, `node test/sandbox.mjs` does the same thing.
 
@@ -274,8 +278,8 @@ Launch a sandboxed session (one command, isolation included):
 ```
 
 Use the launcher rather than setting `CLAUDE_CONFIG_DIR` by hand. It is one
-command because the isolation depends on it: a launch that misses the variable
-comes up as a normal session against your real config, and its memory commands
+command because the isolation depends on it. A launch that misses the variable
+comes up as a normal session against your real config. Its memory commands
 then read your real store.
 
 **The session will ask you to log in. That is the isolation working.** A
@@ -330,8 +334,9 @@ config, plugins, and memory. Nothing in `~/.claude` is read or written.
 
 A separate memory path alone would not be enough. If you already run a memory
 hook of your own, it matches on any `memory` directory under a `.claude`
-directory, so it would fire on the test store too and fight over the same
-state. A separate config directory means only the plugin under test is loaded.
+directory. It would fire on the test store too, and fight over the same
+state. A separate config directory means only the plugin under test is
+loaded.
 
 The cost: a fresh config directory is not logged in, so you authenticate once
 inside the sandbox. That login stays in the sandbox.
@@ -342,12 +347,26 @@ inside the sandbox. That login stays in the sandbox.
 node test/run-tests.mjs
 ```
 
-75 tests covering store resolution (`CLAUDE_CONFIG_DIR` isolation, `~` and
-absolute paths), observe-only mode, archive and delete modes, pause and resume,
-config precedence, plain-word and flag arguments, path guards, traversal
-rejection, log migration, scoring, retire order, both pin routes, the stall
-path, index rebuilding, and recovery from corrupt or absent input. Each builds
-a throwaway store under the OS temp directory. None touches a real one.
+82 tests cover:
+
+- store resolution (`CLAUDE_CONFIG_DIR` isolation, `~` and absolute paths)
+- observe-only mode
+- archive and delete modes
+- pause and resume
+- config precedence
+- plain-word and flag arguments
+- path guards
+- traversal rejection
+- log migration
+- scoring
+- retire order
+- both pin routes
+- the stall path
+- index rebuilding
+- recovery from corrupt or absent input
+
+Each builds a throwaway store under the OS temp directory. None touches a real
+one.
 
 ## License
 
