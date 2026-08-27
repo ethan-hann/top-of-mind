@@ -89,6 +89,25 @@ contiguous run of entry lines. Headings, blank lines, and prose stay where they
 are, so `##` sections survive and each floats its own strongest memory to the
 top.
 
+## What this saves
+
+`MEMORY.md` loads into the context window at the start of every session. After
+that, its size is a fixed cost on every turn, paid in input tokens whether or
+not a given memory is relevant to the task at hand.
+
+An unbounded index has two costs, and they grow together:
+
+- **Tokens.** Every entry is input on every turn. A store left to grow for
+  months bills those tokens even on tasks that touch none of it.
+- **Attention.** A flat list weights a note you last read in April the same as
+  the one you rely on daily. What you want sits in the same undifferentiated
+  block as what you have forgotten.
+
+`top-of-mind` bounds both. The cap holds the token cost to a number you set.
+Ranking moves the memories you use most to the top of their section, where
+Claude reads them first, so the tokens you do spend go to what you actually
+reach for.
+
 ## Pinning
 
 Two independent routes to permanence.
