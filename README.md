@@ -18,15 +18,12 @@ note weighted the same, kept forever, costing tokens on every turn.
 
 ## Quick start
 
-A couple of ways to install the plugin depending on where you use Claude Code:
-
-<detail>
-<summary>test</summary>
-<detail>
+From inside a Claude Code session, add the marketplace, then install the
+plugin:
 
 ```
 /plugin marketplace add ethan-hann/top-of-mind
-/plugin install ethan-hann@top-of-mind
+/plugin install top-of-mind@ethan-hann
 /memory-setup
 ```
 
@@ -34,21 +31,23 @@ Or from a local clone of this repo, point the marketplace at the directory:
 
 ```
 /plugin marketplace add /path/to/top-of-mind
-/plugin install ethan-hann@top-of-mind
+/plugin install top-of-mind@ethan-hann
 ```
 
-Either way the plugin id is `ethan-hann@top-of-mind`
+Either way the plugin id is `top-of-mind@ethan-hann` - the identifier is
+`<plugin>@<marketplace>`, the plugin's name then the marketplace it came from.
 
 The same two steps run from a shell, outside a session:
 
 ```
 claude plugin marketplace add ethan-hann/top-of-mind
-claude plugin install ethan-hann@top-of-mind
+claude plugin install top-of-mind@ethan-hann
 ```
 
-`marketplace add` takes the same sources here - a GitHub `owner/repo`, a URL,
-or a local path. Add `--yes` to `install` to skip the confirmation prompt, for
-scripts and CI.
+`marketplace add` takes the same sources here - a GitHub `owner/repo`, a git
+URL, or a local path. Add `--yes` to `install` to skip the confirmation
+prompt, and `--scope project` to install into the current project rather than
+your user config - handy for scripts and CI.
 
 Installing changes nothing on its own. There is no default cap, so nothing is
 retired until you choose one. `/memory-setup` shows what each cap would retire
